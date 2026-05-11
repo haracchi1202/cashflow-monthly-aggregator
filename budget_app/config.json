@@ -1,0 +1,53 @@
+{
+  "default_header_row": 7,
+  "month_column_keywords": [
+    "入金日",
+    "支払日",
+    "支払い日",
+    "入金月",
+    "支払月",
+    "月",
+    "対象月",
+    "年月",
+    "月度",
+    "期間"
+  ],
+  "amount_column_keywords": [
+    "税込",
+    "合計",
+    "原価総額",
+    "入金額",
+    "実績入金",
+    "入金実績",
+    "売上入金",
+    "確定入金",
+    "支払額",
+    "出金額",
+    "確定支払",
+    "支払実績",
+    "金額"
+  ],
+  "deal_column_keywords": [
+    "商談名",
+    "案件名",
+    "クライアント",
+    "顧客名",
+    "取引先",
+    "件名",
+    "摘要"
+  ],
+  "exclude_keywords": [
+    "合計",
+    "小計",
+    "総計",
+    "Grand Total",
+    "Total",
+    "計"
+  ],
+  "budget_target_sheets": [
+    "MBJ上半期",
+    "MBJ下半期"
+  ],
+  "budget_fiscal_year": 2026,
+  "file_overrides": {}
+}
