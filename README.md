@@ -2,6 +2,10 @@
 
 入金額と入金月が記載された Excel ファイルと、出金額と出金月が記載された Excel ファイルをアップロードして、月ごとの入金合計・出金合計・差額を一覧表示し、結果を Excel でダウンロードできる Streamlit アプリです。
 
+🌐 **公開URL**: https://cashflow-haracchi.streamlit.app/
+
+`main` ブランチに push すると Streamlit Community Cloud で自動再デプロイされます。
+
 ---
 
 ## セットアップ方法
