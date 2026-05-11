@@ -1,0 +1,8 @@
+{
+  "default_header_row": 7,
+  "month_column_keywords": ["入金日", "支払日", "支払い日", "入金月", "支払月"],
+  "amount_column_keywords": ["税込", "合計", "原価総額", "入金額", "金額"],
+  "deal_column_keywords": ["商談名", "案件名", "取引先", "件名", "摘要"],
+  "exclude_keywords": ["合計", "小計", "総計", "Grand Total", "Total", "計"],
+  "file_overrides": {}
+}
