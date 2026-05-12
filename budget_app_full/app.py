@@ -25,6 +25,7 @@ from excel_reader import (
     format_month_jp,
     format_yen,
     parse_file,
+    parse_transaction_file,
     read_excel_preview,
     read_excel_with_header,
 )
@@ -53,6 +54,7 @@ from snapshot_manager import (
     load_snapshot,
     save_snapshot,
 )
+from zoho_fetcher import FetchedFile, ZohoFetcher, fetch_transaction_xlsx, load_zoho_config
 
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -151,6 +153,14 @@ def init_session() -> None:
         ss.comparison_rows = None
     if "comparison_meta" not in ss:
         ss.comparison_meta = None
+    if "zoho_fetched" not in ss:
+        # Zoho から取得した bytes を保持（再集計時の手動アップロードと同等に扱う）
+        ss.zoho_fetched: dict[str, FetchedFile] = {}
+    if "zoho_view_names" not in ss:
+        ss.zoho_view_names = {
+            "confirmed": "confirmed_transactions",
+            "forecast": "forecast_transactions",
+        }
 
 
 # =========================================================
@@ -1017,42 +1027,136 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.header("📦 ファイルアップロード")
-        st.markdown("**① 確定入金Excel（複数可）**")
-        confirmed_income = render_upload("確定入金ファイル", "uploader_ci", True)
-        st.markdown("**② 確定支払Excel（複数可）**")
-        confirmed_payment = render_upload("確定支払ファイル", "uploader_cp", True)
-        st.markdown("**③ 予測入金Excel（複数可）**")
-        forecast_income = render_upload("予測入金ファイル", "uploader_fi", True)
-        st.markdown("**④ 予測支払Excel（複数可）**")
-        forecast_payment = render_upload("予測支払ファイル", "uploader_fp", True)
-        st.markdown("**⑤ 資金繰り予算Excel**")
-        budget_file = render_upload("予算ファイル（例: MBJ26年資金繰...xlsx）", "uploader_budget", False)
+        st.header("📦 データソース")
+
+        # ---- Zoho から自動取得 ----
+        with st.expander("⚡ Zoho Analytics から自動取得", expanded=True):
+            zcfg, src = load_zoho_config()
+            if zcfg is None:
+                st.warning(f"⚠ Zoho 認証情報が未設定です: {src}")
+                st.caption(
+                    ".env または .streamlit/secrets.toml に "
+                    "ZOHO_REGION / CLIENT_ID / CLIENT_SECRET / REFRESH_TOKEN / "
+                    "ORG_ID / WORKSPACE_ID を設定してください。"
+                )
+            else:
+                st.caption(f"✅ 認証情報を {src} から読み込みました")
+                view_conf = st.text_input(
+                    "確定 view 名",
+                    value=st.session_state.zoho_view_names["confirmed"],
+                    key="zoho_conf_view_input",
+                )
+                view_fcst = st.text_input(
+                    "予測 view 名",
+                    value=st.session_state.zoho_view_names["forecast"],
+                    key="zoho_fcst_view_input",
+                )
+                st.session_state.zoho_view_names = {
+                    "confirmed": view_conf.strip(),
+                    "forecast": view_fcst.strip(),
+                }
+                if st.button("🔄 Zoho から取得", use_container_width=True, key="zoho_fetch_btn"):
+                    try:
+                        fetcher = ZohoFetcher(zcfg)
+                        with st.spinner("確定 transactions を取得中..."):
+                            ff_c = fetch_transaction_xlsx(fetcher, view_conf)
+                        with st.spinner("予測 transactions を取得中..."):
+                            ff_f = fetch_transaction_xlsx(fetcher, view_fcst)
+                        st.session_state.zoho_fetched = {
+                            "confirmed": ff_c,
+                            "forecast": ff_f,
+                        }
+                        st.success(
+                            f"取得完了: 確定 {ff_c.row_count} 行 / 予測 {ff_f.row_count} 行"
+                        )
+                    except Exception as e:
+                        st.error(f"Zoho 取得失敗: {e}")
+                        st.code(traceback.format_exc(), language="text")
+            # 取得結果サマリ
+            if st.session_state.zoho_fetched:
+                for label, ff in st.session_state.zoho_fetched.items():
+                    jp = "確定" if label == "confirmed" else "予測"
+                    st.caption(f"  {jp}: {ff.row_count:,} 行 / viewId={ff.view_id}")
+
+        st.divider()
+        st.markdown("**手動アップロード（Zoho 取得を上書き）**")
+        st.markdown("**① 確定 transactions（confirmed_transactions.xlsx）**")
+        confirmed_file = render_upload(
+            "確定 transactions ファイル", "uploader_confirmed", False
+        )
+        st.markdown("**② 予測 transactions（forecast_transactions.xlsx）**")
+        forecast_file = render_upload(
+            "予測 transactions ファイル", "uploader_forecast", False
+        )
+        st.markdown("**③ 資金繰り予算Excel**")
+        budget_file = render_upload(
+            "予算ファイル（例: MBJ26年資金繰...xlsx）", "uploader_budget", False
+        )
         if budget_file is not None:
             st.session_state.budget_bytes = budget_file.getvalue()
             st.session_state.budget_filename = budget_file.name
         st.divider()
         render_config()
 
-    file_lists = {
-        "確定入金": confirmed_income,
-        "確定支払": confirmed_payment,
-        "予測入金": forecast_income,
-        "予測支払": forecast_payment,
-    }
+    # 旧 API との互換のため空 list の dict
+    file_lists: dict[str, list] = {"確定入金": [], "確定支払": [], "予測入金": [], "予測支払": []}
 
-    render_preview(file_lists)
-    st.divider()
-    render_column_overrides(file_lists)
+    # 入力ソースを統一: (filename, bytes, label, source) のリスト
+    transaction_sources: list[tuple[str, bytes, str, str]] = []
+
+    # Zoho 取得結果（手動アップロードで上書きされる）
+    zfetched = st.session_state.zoho_fetched
+    if confirmed_file is not None:
+        transaction_sources.append((confirmed_file.name, confirmed_file.getvalue(), "確定", "アップロード"))
+    elif "confirmed" in zfetched:
+        ff = zfetched["confirmed"]
+        transaction_sources.append((ff.filename, ff.xlsx_bytes, "確定", f"Zoho ({ff.view_id})"))
+    if forecast_file is not None:
+        transaction_sources.append((forecast_file.name, forecast_file.getvalue(), "予測", "アップロード"))
+    elif "forecast" in zfetched:
+        ff = zfetched["forecast"]
+        transaction_sources.append((ff.filename, ff.xlsx_bytes, "予測", f"Zoho ({ff.view_id})"))
+
+    # 簡易プレビュー（任意）
+    if transaction_sources:
+        with st.expander("📄 データソース確認（先頭30行プレビュー）", expanded=False):
+            for fname, bts, label, src in transaction_sources:
+                st.markdown(f"**[{label}] {fname}** — ソース: {src}")
+                try:
+                    preview_df = read_excel_preview(bts, n=30)
+                    preview_df.index = [i + 1 for i in preview_df.index]
+                    st.dataframe(preview_df, use_container_width=True, height=260)
+                except Exception as e:
+                    st.error(f"プレビュー失敗: {e}")
     st.divider()
 
     col_run, col_clear = st.columns([1, 1])
     if col_run.button("🚀 集計を実行", type="primary", use_container_width=True):
-        if sum(len(v) for v in file_lists.values()) == 0:
-            st.warning("ファイルを少なくとも1つアップロードしてください。")
+        if not transaction_sources:
+            st.warning(
+                "確定または予測 transactions が必要です。"
+                "サイドバーの「Zoho から取得」または「手動アップロード」を使ってください。"
+            )
         else:
             with st.spinner("ファイル解析中..."):
-                st.session_state.parsed_results = run_parsing(file_lists)
+                results: list[FileResult] = []
+                progress = st.progress(0.0, text="解析中...")
+                for i, (fname, bts, label, src) in enumerate(transaction_sources, 1):
+                    try:
+                        results.extend(
+                            parse_transaction_file(fname, bts, st.session_state.config)
+                        )
+                    except Exception as e:
+                        results.append(FileResult(
+                            file_name=fname, source_group="(不明)",
+                            transaction_status="unknown", transaction_type="unknown",
+                            header_row=1,
+                            month_col=None, amount_col=None, deal_col=None, client_col=None,
+                            error=f"予期せぬ例外: {e}",
+                        ))
+                    progress.progress(i / len(transaction_sources), text=f"解析中... {fname}")
+                progress.empty()
+                st.session_state.parsed_results = results
             st.success("解析が完了しました。")
     if col_clear.button("🗑️ 解析結果をクリア", use_container_width=True):
         st.session_state.parsed_results = []

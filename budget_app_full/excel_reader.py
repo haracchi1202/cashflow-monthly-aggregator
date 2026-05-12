@@ -362,6 +362,174 @@ def parse_file(
     return result
 
 
+# =========================================================
+# Transaction 形式（縦持ち）ファイルのパース
+# =========================================================
+TRANSACTION_COLUMNS = [
+    "商談名", "クライアント名", "取引日", "金額",
+    "transaction_status", "transaction_type", "payment_round",
+]
+
+
+def parse_transaction_file(
+    file_name: str,
+    file_bytes: bytes,
+    config: dict[str, Any],
+) -> list[FileResult]:
+    """Zoho の confirmed/forecast_transactions エクスポート (transaction 形式 / 縦持ち)
+    を読み込み、source_group ごとに FileResult を分離して返す。
+
+    想定列:
+        商談名, クライアント名, 取引日, 金額,
+        transaction_status (confirmed|forecast),
+        transaction_type (income|payment),
+        payment_round (元項目名)
+
+    戻り値: source_group ごとに 1つ の FileResult (確定入金 / 確定支払 / 予測入金 / 予測支払)
+    """
+    bio = io.BytesIO(file_bytes)
+    try:
+        df = pd.read_excel(bio, sheet_name=0, engine="openpyxl", dtype=object)
+    except Exception as e:
+        # 1つの FileResult にエラーを入れて返す
+        err = FileResult(
+            file_name=file_name, source_group="(不明)",
+            transaction_status="unknown", transaction_type="unknown",
+            header_row=1,
+            month_col=None, amount_col=None, deal_col=None, client_col=None,
+            error=f"Excel読み込み失敗: {e}",
+        )
+        return [err]
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    missing = [c for c in TRANSACTION_COLUMNS if c not in df.columns]
+    if missing:
+        err = FileResult(
+            file_name=file_name, source_group="(不明)",
+            transaction_status="unknown", transaction_type="unknown",
+            header_row=1,
+            month_col=None, amount_col=None, deal_col=None, client_col=None,
+            error=f"必須列が不足: {missing}。実際の列: {list(df.columns)}",
+        )
+        return [err]
+
+    forecast_tax_rate = float(config.get("forecast_tax_rate", 0.10) or 0)
+    apply_tax_for_forecast = bool(config.get("apply_tax_to_forecast", True))
+
+    # source_group ごとに行を集める
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    excluded_by_group: dict[str, list[dict[str, Any]]] = {}
+
+    for idx, row in df.iterrows():
+        excel_row_no = int(idx) + 2  # ヘッダ行が 1 なのでデータは 2 始まり
+        status = str(row.get("transaction_status") or "").strip().lower()
+        type_ = str(row.get("transaction_type") or "").strip().lower()
+        if status not in ("confirmed", "forecast") or type_ not in ("income", "payment"):
+            # 不正行はスキップ（除外行として保存）
+            group = "(不明)"
+            excluded_by_group.setdefault(group, []).append({
+                "source_file": file_name,
+                "source_group": group,
+                "transaction_status": status,
+                "transaction_type": type_,
+                "raw_row_index": excel_row_no,
+                "exclude_reason": "transaction_status/type が不正",
+                "amount": None, "target_month": None,
+                "deal_name": "", "client_name": "",
+            })
+            continue
+
+        status_jp = "確定" if status == "confirmed" else "予測"
+        type_jp = "入金" if type_ == "income" else "支払"
+        group = status_jp + type_jp
+
+        raw_date = row.get("取引日")
+        raw_amount = row.get("金額")
+        raw_deal = row.get("商談名")
+        raw_client = row.get("クライアント名")
+        raw_round = row.get("payment_round")
+
+        ym = normalize_month(raw_date)
+        amount_pretax = normalize_amount(raw_amount)
+
+        tax_applied = False
+        if (
+            status == "forecast"
+            and apply_tax_for_forecast
+            and amount_pretax is not None
+            and forecast_tax_rate > 0
+        ):
+            amount = round(amount_pretax * (1.0 + forecast_tax_rate))
+            tax_applied = True
+        else:
+            amount = amount_pretax
+
+        deal_str = "" if raw_deal is None or (isinstance(raw_deal, float) and pd.isna(raw_deal)) else str(raw_deal).strip()
+        client_str = "" if raw_client is None or (isinstance(raw_client, float) and pd.isna(raw_client)) else str(raw_client).strip()
+        round_str = "" if raw_round is None or (isinstance(raw_round, float) and pd.isna(raw_round)) else str(raw_round).strip()
+
+        exclude_reason: str | None = None
+        if ym is None:
+            exclude_reason = "月なし"
+        elif amount is None:
+            exclude_reason = "金額なし"
+        elif amount == 0:
+            exclude_reason = "金額ゼロ"
+        elif not deal_str:
+            exclude_reason = "商談名空欄"
+
+        record = {
+            "source_file": file_name,
+            "source_group": group,
+            "transaction_status": status,
+            "transaction_type": type_,
+            "target_month": ym,
+            "transaction_date": str(raw_date) if raw_date is not None else "",
+            "amount": amount,
+            "amount_pretax": amount_pretax,
+            "tax_applied": tax_applied,
+            "client_name": client_str,
+            "deal_name": deal_str,
+            "payment_round": round_str,
+            "raw_row_index": excel_row_no,
+            "raw_month": raw_date,
+            "raw_amount": raw_amount,
+        }
+
+        if exclude_reason:
+            record["exclude_reason"] = exclude_reason
+            excluded_by_group.setdefault(group, []).append(record)
+        else:
+            by_group.setdefault(group, []).append(record)
+
+    # source_group ごとに FileResult を作成
+    results: list[FileResult] = []
+    all_groups = set(by_group.keys()) | set(excluded_by_group.keys())
+    for group in sorted(all_groups):
+        status, type_ = GROUP_TO_STATUS_TYPE.get(group, ("unknown", "unknown"))
+        fr = FileResult(
+            file_name=file_name,
+            source_group=group,
+            transaction_status=status,
+            transaction_type=type_,
+            header_row=1,
+            month_col="取引日",
+            amount_col="金額",
+            deal_col="商談名",
+            client_col="クライアント名",
+            detail_rows=by_group.get(group, []),
+            excluded_rows=excluded_by_group.get(group, []),
+        )
+        included = len(fr.detail_rows)
+        excluded = len(fr.excluded_rows)
+        fr.log.append(f"transaction形式: 集計対象={included} / 除外={excluded}")
+        if status == "forecast" and apply_tax_for_forecast and forecast_tax_rate > 0:
+            fr.log.append(f"予測ファイルにつき消費税 {forecast_tax_rate*100:.1f}% を自動加算（税抜→税込）")
+        results.append(fr)
+    return results
+
+
 def results_to_records(
     results: list[FileResult],
     restored_keys: set[str],
