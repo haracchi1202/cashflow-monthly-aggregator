@@ -43,6 +43,16 @@ from budget_updater import (
     verify_overwrite,
 )
 from report_writer import build_report
+from snapshot_manager import (
+    build_comparison_report,
+    compare_snapshots,
+    comparison_to_dataframe,
+    comparison_to_summary,
+    delete_snapshot,
+    list_snapshots,
+    load_snapshot,
+    save_snapshot,
+)
 
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -77,6 +87,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "budget_target_sheets": list(DEFAULT_TARGET_SHEETS),
     "budget_fiscal_year": 2026,
+    "apply_tax_to_forecast": True,
+    "forecast_tax_rate": 0.10,
     "file_overrides": {},
 }
 
@@ -135,6 +147,10 @@ def init_session() -> None:
         ss.verify_log = []
     if "update_scope" not in ss:
         ss.update_scope = "both"
+    if "comparison_rows" not in ss:
+        ss.comparison_rows = None
+    if "comparison_meta" not in ss:
+        ss.comparison_meta = None
 
 
 # =========================================================
@@ -312,6 +328,12 @@ def _render_summary_table(
 
 def render_monthly_summary(monthly_df: pd.DataFrame) -> None:
     st.subheader("📊 月別集計")
+    cfg = st.session_state.config
+    if cfg.get("apply_tax_to_forecast", True):
+        rate = float(cfg.get("forecast_tax_rate", 0.10)) * 100
+        st.caption(
+            f"💴 予測入金・予測支払 には消費税 {rate:.1f}% を自動加算済み（確定は税込のまま）"
+        )
     if monthly_df.empty:
         st.info("集計対象データがありません。")
         return
@@ -744,11 +766,212 @@ def render_overwrite(monthly_df: pd.DataFrame) -> None:
 
 
 # =========================================================
+# UI: スナップショット保存 / 比較
+# =========================================================
+def render_snapshots(
+    monthly_df: pd.DataFrame,
+    results: list[FileResult],
+) -> None:
+    st.subheader("💾 スナップショット保存 & 前回との比較")
+    st.caption(
+        "現在の集計結果を保存しておき、次回 Excel をアップロードした時に "
+        "「金額がいくらに変わったか」「入金日が動いたか」などを商談名ベースで比較できます。"
+    )
+
+    # ---- 保存 ----
+    with st.expander("✏️ 現在の集計を保存", expanded=False):
+        if monthly_df.empty:
+            st.info("集計データがありません。先に「🚀 集計を実行」してください。")
+        else:
+            default_name = f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            snap_name = st.text_input("スナップショット名", value=default_name, key="snap_name_input")
+            if st.button("💾 保存", use_container_width=True, key="snap_save_btn"):
+                path = save_snapshot(
+                    name=snap_name,
+                    results=results,
+                    monthly_df=monthly_df,
+                    written_log=st.session_state.written_log,
+                    update_scope=st.session_state.update_scope,
+                    month_from=st.session_state.get("update_from"),
+                    month_to=st.session_state.get("update_to"),
+                )
+                st.success(f"保存しました: {path.name}")
+
+    # ---- 一覧 ----
+    snaps = list_snapshots()
+    if not snaps:
+        st.info("まだスナップショットは保存されていません。")
+        return
+
+    with st.expander(f"📚 保存済みスナップショット一覧（{len(snaps)} 件）", expanded=False):
+        snap_table = [
+            {
+                "ファイル名": s.path.name,
+                "名前": s.name,
+                "保存日時": s.saved_at,
+                "明細件数": s.detail_count,
+                "月別行数": s.monthly_count,
+            }
+            for s in snaps
+        ]
+        st.dataframe(pd.DataFrame(snap_table), use_container_width=True, hide_index=True)
+
+        # 削除
+        del_target = st.selectbox(
+            "削除するスナップショット",
+            options=[""] + [s.path.name for s in snaps],
+            key="snap_delete_select",
+        )
+        if del_target and st.button("🗑️ 選択したスナップショットを削除", key="snap_delete_btn"):
+            for s in snaps:
+                if s.path.name == del_target:
+                    delete_snapshot(s.path)
+                    st.success(f"削除しました: {del_target}")
+                    st.rerun()
+                    break
+
+    # ---- 比較 ----
+    st.markdown("#### 🔄 前回スナップショットと比較")
+    options = [(s.path.name, f"{s.saved_at}  /  {s.name}") for s in snaps]
+    if len(options) < 1:
+        return
+
+    c1, c2 = st.columns(2)
+    base_choice = c1.selectbox(
+        "前回（比較元）",
+        options=[o[0] for o in options],
+        format_func=lambda v: dict(options)[v],
+        index=min(1, len(options) - 1),
+        key="snap_base_select",
+    )
+    new_choice = c2.selectbox(
+        "今回（比較先 / 既定: 最新）",
+        options=["__current__"] + [o[0] for o in options],
+        format_func=lambda v: "現在の集計結果（未保存）" if v == "__current__" else dict(options)[v],
+        index=0,
+        key="snap_new_select",
+    )
+
+    if st.button("🔍 比較を実行", type="primary", use_container_width=True, key="snap_compare_btn"):
+        try:
+            base_data = load_snapshot(next(s.path for s in snaps if s.path.name == base_choice))
+        except StopIteration:
+            st.error("前回スナップショットの読み込みに失敗しました。")
+            return
+
+        if new_choice == "__current__":
+            if monthly_df.empty:
+                st.warning("現在の集計データがありません。集計を実行してください。")
+                return
+            # 現在の状態をその場で擬似的にスナップショット化
+            details = []
+            excluded = []
+            for r in results:
+                for row in r.detail_rows:
+                    details.append({
+                        k: row.get(k) for k in [
+                            "source_file", "source_group", "transaction_status", "transaction_type",
+                            "target_month", "transaction_date", "amount",
+                            "client_name", "deal_name", "raw_row_index",
+                        ]
+                    })
+            new_data = {
+                "name": "現在（未保存）",
+                "saved_at": datetime.now().isoformat(timespec="seconds"),
+                "details": details,
+            }
+        else:
+            new_data = load_snapshot(next(s.path for s in snaps if s.path.name == new_choice))
+
+        rows = compare_snapshots(base_data, new_data)
+        st.session_state.comparison_rows = rows
+        st.session_state.comparison_meta = {"old": base_data, "new": new_data}
+
+    rows = st.session_state.comparison_rows
+    meta = st.session_state.comparison_meta
+    if not rows or not meta:
+        return
+
+    # ---- 比較サマリー ----
+    summary = comparison_to_summary(rows)
+    st.markdown("##### 📊 比較サマリー")
+    sum_table = [
+        {
+            "ファイル区分": sg,
+            "追加": counts["added"],
+            "削除": counts["removed"],
+            "変更": counts["changed"],
+            "変更なし": counts["unchanged"],
+            "合計": sum(counts.values()),
+        }
+        for sg, counts in sorted(summary.items())
+    ]
+    st.dataframe(pd.DataFrame(sum_table), use_container_width=True, hide_index=True)
+
+    # ---- フィルタ + 表 ----
+    st.markdown("##### 🧾 変更明細")
+    status_filter = st.multiselect(
+        "表示する状態",
+        options=["変更", "追加", "削除", "変更なし"],
+        default=["変更", "追加", "削除"],
+        key="snap_status_filter",
+    )
+    group_filter = st.multiselect(
+        "ファイル区分",
+        options=sorted({r.source_group for r in rows}),
+        default=sorted({r.source_group for r in rows}),
+        key="snap_group_filter",
+    )
+    df = comparison_to_dataframe(rows)
+    if not df.empty:
+        df = df[df["状態"].isin(status_filter)]
+        df = df[df["ファイル区分"].isin(group_filter)]
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.caption(f"表示中: {len(df)} 行 / 全 {len(rows)} 行")
+
+    # ---- レポート Excel ダウンロード ----
+    try:
+        report_bytes = build_comparison_report(rows, meta["old"], meta["new"])
+        out_name = f"変更レポート_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        st.download_button(
+            "📥 変更レポート Excel をダウンロード",
+            data=report_bytes,
+            file_name=out_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.error(f"変更レポート生成失敗: {e}")
+        st.code(traceback.format_exc(), language="text")
+
+
+# =========================================================
 # UI: 設定
 # =========================================================
 def render_config() -> None:
     st.subheader("⚙️ 設定の保存・読み込み")
     cfg = st.session_state.config
+
+    with st.expander("💴 予測ファイル 消費税設定", expanded=False):
+        st.caption(
+            "予測入金 / 予測支払 ファイルは税抜のため、読み込み時に自動で消費税を加算します。"
+            "確定ファイルは税込のためそのまま使われます。"
+        )
+        apply_tax = st.checkbox(
+            "予測ファイルに消費税を自動加算する",
+            value=bool(cfg.get("apply_tax_to_forecast", True)),
+            key="apply_tax_to_forecast_input",
+        )
+        tax_rate_pct = st.number_input(
+            "税率 (%)",
+            min_value=0.0, max_value=30.0, step=0.5,
+            value=float(cfg.get("forecast_tax_rate", 0.10)) * 100,
+            key="forecast_tax_rate_input",
+        )
+        cfg["apply_tax_to_forecast"] = bool(apply_tax)
+        cfg["forecast_tax_rate"] = round(tax_rate_pct / 100, 4)
+
     with st.expander("キーワード設定（自動判定の調整）", expanded=False):
         month_kw = st.text_input("月列キーワード (カンマ区切り)", value=",".join(cfg["month_column_keywords"]))
         amount_kw = st.text_input("金額列キーワード (カンマ区切り)", value=",".join(cfg["amount_column_keywords"]))
@@ -881,6 +1104,8 @@ def main() -> None:
     render_budget_analysis()
     st.divider()
     render_overwrite(monthly_df)
+    st.divider()
+    render_snapshots(monthly_df, results)
     st.divider()
     extra_log = (st.session_state.budget_analysis or {}).get("log_lines", []) if st.session_state.budget_analysis else []
     log_lines = render_logs(results, extra_log)

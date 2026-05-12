@@ -266,6 +266,18 @@ def parse_file(
         overrides.get("extra_exclude_keywords", []) or []
     )
 
+    # 予測ファイルのみ、消費税を自動加算（確定ファイルはそのまま）
+    forecast_tax_rate = float(config.get("forecast_tax_rate", 0.10) or 0)
+    apply_forecast_tax = (
+        bool(config.get("apply_tax_to_forecast", True))
+        and status == "forecast"
+        and forecast_tax_rate > 0
+    )
+    if apply_forecast_tax:
+        result.log.append(
+            f"予測ファイルにつき消費税 {forecast_tax_rate * 100:.1f}% を自動加算 (税抜→税込)"
+        )
+
     last_month_ym: str | None = None
     total_rows = 0
     included = 0
@@ -286,7 +298,11 @@ def parse_file(
         else:
             ym = last_month_ym
 
-        amount = normalize_amount(raw_amount)
+        amount_pretax = normalize_amount(raw_amount)
+        if amount_pretax is not None and apply_forecast_tax:
+            amount = round(amount_pretax * (1.0 + forecast_tax_rate))
+        else:
+            amount = amount_pretax
         deal_str = (
             ""
             if raw_deal is None or (isinstance(raw_deal, float) and pd.isna(raw_deal))
@@ -322,7 +338,9 @@ def parse_file(
             "transaction_type": type_,
             "target_month": ym,
             "transaction_date": str(raw_month) if raw_month is not None else "",
-            "amount": amount,
+            "amount": amount,                # 集計・予算上書きに使う値（予測は税込）
+            "amount_pretax": amount_pretax,  # 元の値（参考表示用）
+            "tax_applied": apply_forecast_tax,
             "client_name": client_str,
             "deal_name": deal_str,
             "raw_row_index": excel_row_no,

@@ -34,3 +34,7 @@ dist/
 result/
 *.xlsx~$
 ~$*.xlsx
+
+# User-created snapshots (private data)
+budget_app/snapshots/
+budget_app_full/snapshots/

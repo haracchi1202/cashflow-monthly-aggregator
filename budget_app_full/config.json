@@ -73,5 +73,7 @@
     "MBJ下半期"
   ],
   "budget_fiscal_year": 2026,
+  "apply_tax_to_forecast": true,
+  "forecast_tax_rate": 0.10,
   "file_overrides": {}
 }
