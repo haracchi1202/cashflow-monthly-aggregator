@@ -428,10 +428,18 @@ def _render_detail_table(df: pd.DataFrame, label: str) -> None:
     if df.empty:
         st.info(f"{label}明細はありません。")
         return
-    keep = ["source_file", "raw_row_index", "target_month", "client_name", "deal_name", "amount"]
+    keep = ["target_month", "client_name", "deal_name", "deal_id", "amount", "payment_round"]
+    label_map = {
+        "target_month": "月",
+        "client_name": "顧客名",
+        "deal_name": "商談名",
+        "deal_id": "案件番号",
+        "amount": "金額",
+        "payment_round": "項目",
+    }
     cols = [c for c in keep if c in df.columns]
     show = df[cols].copy()
-    show.columns = ["ファイル名", "行番号", "月", "顧客名", "商談名", "金額"][: len(cols)]
+    show.columns = [label_map[c] for c in cols]
     if "月" in show.columns:
         show["月"] = show["月"].apply(format_month_jp)
     if "金額" in show.columns:

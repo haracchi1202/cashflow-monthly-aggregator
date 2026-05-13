@@ -38,3 +38,8 @@ result/
 # User-created snapshots (private data)
 budget_app/snapshots/
 budget_app_full/snapshots/
+
+# Diagnostic/one-shot scripts containing hardcoded tokens, business data exports
+zoho_query_builder/_*.py
+zoho_query_builder/_*.csv
+zoho_query_builder/*.csv

@@ -145,6 +145,12 @@ def cmd_build(args: argparse.Namespace) -> None:
         qualify_column=args.qualify_column,
         qualify_date_from=args.qualify_from,
         qualify_date_to=args.qualify_to,
+        include_deal_id=args.include_deal_id,
+        resolve_client_name=args.resolve_client_name,
+        client_lookup_table=args.client_lookup_table,
+        client_lookup_id_col=args.client_lookup_id_col,
+        client_lookup_name_col=args.client_lookup_name_col,
+        include_case_number=args.include_case_number,
     )
     print("=== 生成 SQL ===")
     print(sql)
@@ -273,6 +279,18 @@ def main() -> None:
                         help="期間フィルタの終了日 YYYY-MM-DD")
     p_build.add_argument("--replace", action="store_true",
                         help="同名 Query Table が既存ならば削除して作り直す")
+    p_build.add_argument("--include-deal-id", action="store_true",
+                        help="商談.Id を 案件番号 列として追加")
+    p_build.add_argument("--resolve-client-name", action="store_true",
+                        help="取引先テーブルと JOIN してクライアント名を実名で取得")
+    p_build.add_argument("--client-lookup-table", default="取引先",
+                        help="クライアント名解決用のテーブル名（既定: 取引先）")
+    p_build.add_argument("--client-lookup-id-col", default="Id",
+                        help="JOIN 用のキー列（既定: Id）")
+    p_build.add_argument("--client-lookup-name-col", default="取引先名",
+                        help="クライアント名の列（既定: 取引先名）")
+    p_build.add_argument("--include-case-number", action="store_true",
+                        help="deal_case_numbers テーブルと JOIN して 案件番号 (MBJxxxxx) を取得")
     p_build.add_argument("--dry-run", action="store_true", help="SQL の表示のみ。Query Table は作成しない")
     p_build.set_defaults(func=cmd_build)
 

@@ -369,6 +369,7 @@ TRANSACTION_COLUMNS = [
     "商談名", "クライアント名", "取引日", "金額",
     "transaction_status", "transaction_type", "payment_round",
 ]
+TRANSACTION_OPTIONAL_COLUMNS = ["案件番号"]  # 任意。あれば取り込む
 
 
 def parse_transaction_file(
@@ -449,6 +450,7 @@ def parse_transaction_file(
         raw_deal = row.get("商談名")
         raw_client = row.get("クライアント名")
         raw_round = row.get("payment_round")
+        raw_deal_id = row.get("案件番号") if "案件番号" in df.columns else None
 
         ym = normalize_month(raw_date)
         amount_pretax = normalize_amount(raw_amount)
@@ -468,6 +470,7 @@ def parse_transaction_file(
         deal_str = "" if raw_deal is None or (isinstance(raw_deal, float) and pd.isna(raw_deal)) else str(raw_deal).strip()
         client_str = "" if raw_client is None or (isinstance(raw_client, float) and pd.isna(raw_client)) else str(raw_client).strip()
         round_str = "" if raw_round is None or (isinstance(raw_round, float) and pd.isna(raw_round)) else str(raw_round).strip()
+        deal_id_str = "" if raw_deal_id is None or (isinstance(raw_deal_id, float) and pd.isna(raw_deal_id)) else str(raw_deal_id).strip()
 
         exclude_reason: str | None = None
         if ym is None:
@@ -491,6 +494,7 @@ def parse_transaction_file(
             "tax_applied": tax_applied,
             "client_name": client_str,
             "deal_name": deal_str,
+            "deal_id": deal_id_str,
             "payment_round": round_str,
             "raw_row_index": excel_row_no,
             "raw_month": raw_date,
