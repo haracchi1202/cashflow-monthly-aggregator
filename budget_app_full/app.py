@@ -428,12 +428,13 @@ def _render_detail_table(df: pd.DataFrame, label: str) -> None:
     if df.empty:
         st.info(f"{label}明細はありません。")
         return
-    keep = ["target_month", "client_name", "deal_name", "deal_id", "amount", "payment_round"]
+    keep = ["target_month", "client_name", "deal_name", "deal_id", "payee_name", "amount", "payment_round"]
     label_map = {
         "target_month": "月",
         "client_name": "顧客名",
         "deal_name": "商談名",
         "deal_id": "案件番号",
+        "payee_name": "支払先",
         "amount": "金額",
         "payment_round": "項目",
     }

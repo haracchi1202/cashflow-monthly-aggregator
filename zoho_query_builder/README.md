@@ -164,6 +164,7 @@ SELECT ... -- payment_1
 |---|---|---|
 | 商談名 | varchar | 元テーブルから引用 |
 | クライアント名 | varchar | 元テーブルから引用 |
+| 支払先名 | varchar | payment 行のみ。元テーブルの `国内仕入N　支払先` / `予測{初回\|残金\|予備}支払先` を引用。income 行は NULL |
 | 取引日 | date | 各日付列を縦持ち化 |
 | 金額 | number | 税込金額 |
 | transaction_status | varchar | `confirmed` / `forecast` |
@@ -180,6 +181,36 @@ SELECT ... -- payment_1
 - 日付が NULL
 - 金額が NULL
 - 金額が 0
+
+---
+
+## 支払先名（`--resolve-payee` オプション）
+
+確定/予測テーブル本体に「支払先」列が同期されていない場合、`--resolve-payee` を付けると `商談` raw テーブルを LEFT JOIN し、各 payment 行に対応する `国内仕入N　支払先` 列を `支払先名` として出力します。
+
+```powershell
+python main.py build --source-table 商談 --output-name confirmed_transactions ^
+                    --status confirmed --resolve-payee
+```
+
+### 前提条件（重要）
+
+`--resolve-payee` を有効にするには、**JOIN 先テーブル（既定: `商談`）の支払先 列名が、payment の date_column と同じ表記**である必要があります。具体的には：
+
+- date_column が `国内仕入１　支払日`（全角１＋全角空白）なら、JOIN 先にも `国内仕入１　支払先`（同じ全角１＋同じ全角空白）が存在する必要がある
+- 内部実装は `date_column.replace("支払日", "支払先")` で列名を導出する単純なロジック
+
+この前提が崩れると **「列が存在しない」エラーで Query Table 作成自体が失敗** します。事前に以下で揃いを確認してください：
+
+```powershell
+python main.py inspect --source-table 商談 | findstr 支払
+```
+
+JOIN 先が `商談` 以外（独自 lookup テーブル等）の場合は `--payee-lookup-table <name>` で指定できますが、列名規約（`〜支払日` ↔ `〜支払先`）は同様に守る必要があります。
+
+### `--resolve-payee` を使わない場合
+
+確定/予測テーブル本体に直接 `〜支払先` 列が同期されていれば、`detector.py` が自動で `pair.payee_column` として拾い、JOIN なしで `支払先名` を出します。
 
 ---
 

@@ -35,6 +35,7 @@ class TransactionPair:
     payment_round: str      # "income_1" / "payment_1" など
     date_column: str        # 元の列名（クォート前）
     amount_column: str      # 元の列名（クォート前）
+    payee_column: str | None = None  # 支払先名 列（payment のみ。無ければ None）
 
 
 @dataclass
@@ -54,12 +55,15 @@ INCOME_AMOUNT_RE = re.compile(r"^クライアント入金額(\d)\(税込\)$")
 # パターン: 確定 - 国内仕入(1〜9)支払日, 国内仕入(1〜9)原価総額(税込)
 PAYMENT_DATE_RE = re.compile(r"^国内仕入(\d)支払日$")
 PAYMENT_AMOUNT_RE = re.compile(r"^国内仕入(\d)原価総額\(税込\)$")
+# 支払先 / 支払先名 どちらの命名にも対応
+PAYMENT_PAYEE_RE = re.compile(r"^国内仕入(\d)支払先名?$")
 
 # パターン: 予測 - 予測(初回|残金|予備)(入金|支払)日 / 予測(初回|残金|予備)(入金|支払)額
 # 順序: 初回 → 残金 → 予備
 _FORECAST_ROUND_ORDER = {"初回": 1, "残金": 2, "予備": 3}
 FORECAST_DATE_RE = re.compile(r"^予測(初回|残金|予備)(入金|支払)日$")
 FORECAST_AMOUNT_RE = re.compile(r"^予測(初回|残金|予備)(入金|支払)額$")
+FORECAST_PAYEE_RE = re.compile(r"^予測(初回|残金|予備)支払先名?$")
 
 # 商談名・クライアント名は完全一致を優先、部分マッチもフォールバック
 DEAL_KEYWORDS = ["商談名", "案件名", "件名"]
@@ -118,6 +122,7 @@ def detect_columns(columns: list[str]) -> DetectionResult:
     # 確定パターン - 支払: 同様
     payment_dates: dict[int, str] = {}
     payment_amounts: dict[int, str] = {}
+    payment_payees: dict[int, str] = {}
     for c, n in norm_map.items():
         m = PAYMENT_DATE_RE.match(n)
         if m:
@@ -125,12 +130,16 @@ def detect_columns(columns: list[str]) -> DetectionResult:
         m = PAYMENT_AMOUNT_RE.match(n)
         if m:
             payment_amounts[int(m.group(1))] = c
+        m = PAYMENT_PAYEE_RE.match(n)
+        if m:
+            payment_payees[int(m.group(1))] = c
 
     # 予測パターン - 初回/残金/予備 × 入金/支払
     forecast_income_dates: dict[int, str] = {}
     forecast_income_amounts: dict[int, str] = {}
     forecast_payment_dates: dict[int, str] = {}
     forecast_payment_amounts: dict[int, str] = {}
+    forecast_payment_payees: dict[int, str] = {}
     for c, n in norm_map.items():
         m = FORECAST_DATE_RE.match(n)
         if m:
@@ -148,6 +157,11 @@ def detect_columns(columns: list[str]) -> DetectionResult:
                 forecast_income_amounts[idx] = c
             else:
                 forecast_payment_amounts[idx] = c
+        m = FORECAST_PAYEE_RE.match(n)
+        if m:
+            round_name = m.group(1)
+            idx = _FORECAST_ROUND_ORDER.get(round_name, 99)
+            forecast_payment_payees[idx] = c
 
     pairs: list[TransactionPair] = []
     warnings: list[str] = []
@@ -163,8 +177,9 @@ def detect_columns(columns: list[str]) -> DetectionResult:
     for idx in sorted(set(payment_dates.keys()) | set(payment_amounts.keys())):
         d = payment_dates.get(idx)
         a = payment_amounts.get(idx)
+        p = payment_payees.get(idx)
         if d and a:
-            pairs.append(TransactionPair("payment", f"payment_{idx}", d, a))
+            pairs.append(TransactionPair("payment", f"payment_{idx}", d, a, p))
         else:
             warnings.append(f"支払{idx}: 日付列={d} / 金額列={a} のペアが揃わずスキップ")
 
@@ -179,8 +194,9 @@ def detect_columns(columns: list[str]) -> DetectionResult:
     for idx in sorted(set(forecast_payment_dates.keys()) | set(forecast_payment_amounts.keys())):
         d = forecast_payment_dates.get(idx)
         a = forecast_payment_amounts.get(idx)
+        p = forecast_payment_payees.get(idx)
         if d and a:
-            pairs.append(TransactionPair("payment", f"forecast_payment_{idx}", d, a))
+            pairs.append(TransactionPair("payment", f"forecast_payment_{idx}", d, a, p))
         else:
             warnings.append(f"予測支払{idx}: 日付列={d} / 金額列={a} のペアが揃わずスキップ")
 

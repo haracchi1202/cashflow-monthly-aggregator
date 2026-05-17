@@ -35,6 +35,10 @@ def build_transaction_sql(
     case_lookup_table: str = "deal_case_numbers",
     case_lookup_id_col: str = "deal_id",
     case_lookup_name_col: str = "案件番号",
+    resolve_payee: bool = False,
+    payee_lookup_table: str = "商談",
+    payee_lookup_id_col: str = "Id",
+    deal_join_id_col: str = "Id",
 ) -> str:
     """確定/予測 共通の UNION ALL SQL を生成。
 
@@ -76,7 +80,7 @@ def build_transaction_sql(
             f"= {lkp_alias}.{_q(client_lookup_id_col)}"
         )
     else:
-        client = _src_col(detection.client_column) if detection.client_column else "CAST(NULL AS VARCHAR)"
+        client = _src_col(detection.client_column) if detection.client_column else "NULL"
         join_clause = ""
 
     # 案件番号
@@ -96,6 +100,17 @@ def build_transaction_sql(
     else:
         deal_id_select = ""
         case_join = ""
+
+    # 支払先 を 商談 raw テーブルから取りに行く JOIN
+    # （確定/予測 テーブルに 支払先 列を sync させていない場合のフォールバック）
+    payee_alias = "m"
+    payee_join = ""
+    if resolve_payee:
+        payee_join = (
+            f"\nLEFT JOIN {_q(payee_lookup_table)} {payee_alias} "
+            f"ON {src_alias}.{_q(deal_join_id_col)} "
+            f"= {payee_alias}.{_q(payee_lookup_id_col)}"
+        )
 
     # ステージフィルタ
     stage_filter = ""
@@ -123,18 +138,34 @@ def build_transaction_sql(
     for pair in detection.pairs:
         date_q = _src_col(pair.date_column)
         amount_q = _src_col(pair.amount_column)
+        # 支払先名: payment 行のみ採用
+        # 優先順位: (1) resolve_payee=True なら 商談 raw を JOIN し、
+        #             date_column の "支払日" を "支払先" に差し替えた列を引く
+        #          (2) detector が pair.payee_column を検出していればそれ
+        #          (3) どちらもなければ NULL
+        if pair.transaction_type == "payment":
+            if resolve_payee:
+                payee_col_name = pair.date_column.replace("支払日", "支払先")
+                payee_q = f"{payee_alias}.{_q(payee_col_name)}"
+            elif pair.payee_column:
+                payee_q = _src_col(pair.payee_column)
+            else:
+                payee_q = "NULL"
+        else:
+            payee_q = "NULL"
         # payment_round は元の項目名（日付列名）を入れる
         # SQL 文字列リテラル内のシングルクォートをエスケープ
         round_label = pair.date_column.replace("'", "''")
         block = f"""SELECT
     {deal}         AS "商談名",
 {deal_id_select}    {client}       AS "クライアント名",
+    {payee_q}      AS "支払先名",
     {date_q}       AS "取引日",
     {amount_q}     AS "金額",
     '{transaction_status}'   AS "transaction_status",
     '{pair.transaction_type}' AS "transaction_type",
     '{round_label}' AS "payment_round"
-FROM {src}{join_clause}{case_join}
+FROM {src}{join_clause}{case_join}{payee_join}
 WHERE {deal}     IS NOT NULL
   AND {date_q}   IS NOT NULL
   AND {amount_q} IS NOT NULL

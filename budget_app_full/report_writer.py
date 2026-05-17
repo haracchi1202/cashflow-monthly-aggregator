@@ -55,28 +55,38 @@ def _write_headers(ws, columns: list[str], fmt) -> None:
 
 
 def _detail_sheet(writer, sheet_name: str, df: pd.DataFrame, yen_fmt, header_fmt) -> None:
-    columns_template = [
-        "source_file", "raw_row_index", "target_month",
-        "client_name", "deal_name", "amount", "transaction_date",
+    # (英語キー, 日本語ヘッダ, 列幅, 数値フォーマットを使うか)
+    column_specs: list[tuple[str, str, int, bool]] = [
+        ("source_file",      "ファイル名", 36, False),
+        ("raw_row_index",    "行番号",     8,  False),
+        ("target_month",     "月",         12, False),
+        ("client_name",      "顧客名",     24, False),
+        ("deal_name",        "商談名",     36, False),
+        ("payee_name",       "支払先",     24, False),
+        ("amount",           "金額",       18, True),
+        ("transaction_date", "元月セル",   20, False),
     ]
-    out_columns_jp = ["ファイル名", "行番号", "月", "顧客名", "商談名", "金額", "元月セル"]
+    keys = [k for k, _, _, _ in column_specs]
+    jp_map = {k: jp for k, jp, _, _ in column_specs}
+
     if df.empty:
-        out = pd.DataFrame(columns=out_columns_jp)
+        out = pd.DataFrame(columns=[jp_map[k] for k in keys])
+        kept_keys = keys
     else:
-        out = df.copy()
-        out = out[[c for c in columns_template if c in out.columns]]
-        out.columns = out_columns_jp[: len(out.columns)]
+        kept_keys = [k for k in keys if k in df.columns]
+        out = df[kept_keys].copy()
+        out.columns = [jp_map[k] for k in kept_keys]
         if "月" in out.columns:
             out["月"] = out["月"].apply(lambda v: format_month_jp(v) if v else "")
     out.to_excel(writer, sheet_name=sheet_name, index=False)
     ws = writer.sheets[sheet_name]
-    ws.set_column("A:A", 36)
-    ws.set_column("B:B", 8)
-    ws.set_column("C:C", 12)
-    ws.set_column("D:D", 24)
-    ws.set_column("E:E", 36)
-    ws.set_column("F:F", 18, yen_fmt)
-    ws.set_column("G:G", 20)
+    for i, k in enumerate(kept_keys):
+        _, _, width, is_yen = next(c for c in column_specs if c[0] == k)
+        col_letter = chr(ord("A") + i)
+        if is_yen:
+            ws.set_column(f"{col_letter}:{col_letter}", width, yen_fmt)
+        else:
+            ws.set_column(f"{col_letter}:{col_letter}", width)
     _write_headers(ws, list(out.columns), header_fmt)
 
 
