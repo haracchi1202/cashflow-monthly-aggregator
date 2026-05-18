@@ -163,7 +163,7 @@ SELECT ... -- payment_1
 | 列 | 型 | 値 |
 |---|---|---|
 | 商談名 | varchar | 元テーブルから引用 |
-| クライアント名 | varchar | 元テーブルから引用 |
+| クライアント名 | varchar | 既定で `取引先` テーブルを LEFT JOIN し `取引先名` を取得（日本語名）。`--no-resolve-client-name` で元テーブル列の素値（lookup ID）に切替 |
 | 支払先名 | varchar | payment 行のみ。元テーブルの `国内仕入N　支払先` / `予測{初回\|残金\|予備}支払先` を引用。income 行は NULL |
 | 取引日 | date | 各日付列を縦持ち化 |
 | 金額 | number | 税込金額 |

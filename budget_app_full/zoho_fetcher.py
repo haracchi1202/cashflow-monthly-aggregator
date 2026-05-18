@@ -172,6 +172,88 @@ class ZohoFetcher:
         return resp.content.decode("utf-8-sig", errors="replace")
 
 
+def sync_crm_and_wait(
+    fetcher: ZohoFetcher,
+    datasource_name: str = "Zoho CRM",
+    poll_interval_sec: float = 10.0,
+    max_wait_sec: float = 600.0,
+    on_progress=None,
+) -> dict[str, Any]:
+    """CRM データソースの同期を発火し、完了まで待つ。
+
+    Returns
+    -------
+    dict
+        {"triggered": bool, "datasource": {...}, "elapsed_sec": float,
+         "skipped": str | None}
+
+    on_progress(message: str) があれば進捗を渡す。
+    OAuth スコープ不足等で失敗した場合は例外を投げず、skipped に理由を入れて返す。
+    """
+    import time
+
+    def _say(msg: str) -> None:
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+    sources = fetcher.client.list_data_sources()
+    target = next(
+        (s for s in sources if (s.get("datasourceName") or "") == datasource_name),
+        None,
+    )
+    if target is None:
+        return {"triggered": False, "datasource": None, "elapsed_sec": 0.0,
+                "skipped": f"データソース '{datasource_name}' が見つかりません"}
+
+    ds_id = str(target.get("datasourceId"))
+    before_time = target.get("lastDataSyncTime") or ""
+    _say(f"CRM 最終同期: {before_time} → 同期発火中...")
+
+    try:
+        fetcher.client.trigger_datasource_sync(ds_id)
+    except RuntimeError as e:
+        msg = str(e)
+        if "INVALID_OAUTHSCOPE" in msg:
+            return {"triggered": False, "datasource": target, "elapsed_sec": 0.0,
+                    "skipped": "OAuth スコープ不足 (ZohoAnalytics.data.update 等が必要)"}
+        if "RATE_LIMIT" in msg or "DAILY_LIMIT" in msg or "totalSyncAllowed" in msg:
+            return {"triggered": False, "datasource": target, "elapsed_sec": 0.0,
+                    "skipped": f"同期上限 ({target.get('totalSyncAllowed')}/日) 到達"}
+        # その他は呼び出し側に伝搬
+        raise
+
+    # ポーリング: lastDataSyncTime が変わり、かつ lastDataSyncStatus が「同期中」を抜けるまで
+    # 注: 時刻は同期開始時に更新されるが、実データの取り込みは数分かかるので
+    #     status が「同期中」から「データを同期しました」等になるまで待つ
+    started = time.time()
+    time_changed = False
+    while True:
+        elapsed = time.time() - started
+        if elapsed > max_wait_sec:
+            return {"triggered": True, "datasource": target, "elapsed_sec": elapsed,
+                    "skipped": f"待ち時間タイムアウト ({max_wait_sec:.0f}s)"}
+        sources = fetcher.client.list_data_sources()
+        latest = next(
+            (s for s in sources if (s.get("datasourceName") or "") == datasource_name),
+            None,
+        )
+        if latest is None:
+            return {"triggered": True, "datasource": None, "elapsed_sec": elapsed,
+                    "skipped": "同期後のデータソース取得に失敗"}
+        new_time = latest.get("lastDataSyncTime") or ""
+        status = latest.get("lastDataSyncStatus") or ""
+        _say(f"  待機中... 経過 {elapsed:.0f}s / 状態={status} / 最終={new_time}")
+        if new_time and new_time != before_time:
+            time_changed = True
+        if time_changed and status and status != "同期中":
+            return {"triggered": True, "datasource": latest, "elapsed_sec": elapsed,
+                    "skipped": None}
+        time.sleep(poll_interval_sec)
+
+
 def fetch_transaction_xlsx(
     fetcher: ZohoFetcher,
     view_name: str,

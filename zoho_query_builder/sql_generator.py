@@ -27,7 +27,7 @@ def build_transaction_sql(
     extra_where: str | None = None,
     include_deal_id: bool = False,
     deal_id_column: str = "Id",
-    resolve_client_name: bool = False,
+    resolve_client_name: bool = True,
     client_lookup_table: str = "取引先",
     client_lookup_id_col: str = "Id",
     client_lookup_name_col: str = "取引先名",

@@ -54,7 +54,13 @@ from snapshot_manager import (
     load_snapshot,
     save_snapshot,
 )
-from zoho_fetcher import FetchedFile, ZohoFetcher, fetch_transaction_xlsx, load_zoho_config
+from zoho_fetcher import (
+    FetchedFile,
+    ZohoFetcher,
+    fetch_transaction_xlsx,
+    load_zoho_config,
+    sync_crm_and_wait,
+)
 
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -1064,9 +1070,37 @@ def main() -> None:
                     "confirmed": view_conf.strip(),
                     "forecast": view_fcst.strip(),
                 }
+                sync_first = st.checkbox(
+                    "取得前に CRM → Analytics 同期を実行 (常に最新化)",
+                    value=True,
+                    key="zoho_sync_first",
+                    help="Zoho CRM の更新内容を Analytics へ同期してから取得します。"
+                         "1日あたりの手動同期上限あり（既定 5 回）。"
+                         "OAuth スコープが不足している場合は同期をスキップして取得のみ実行します。",
+                )
                 if st.button("🔄 Zoho から取得", use_container_width=True, key="zoho_fetch_btn"):
                     try:
                         fetcher = ZohoFetcher(zcfg)
+                        if sync_first:
+                            status_box = st.empty()
+                            with st.spinner("CRM → Analytics 同期中..."):
+                                result = sync_crm_and_wait(
+                                    fetcher,
+                                    on_progress=lambda msg: status_box.caption(msg),
+                                )
+                            if result.get("skipped"):
+                                st.warning(
+                                    f"⚠ CRM 同期をスキップ: {result['skipped']}"
+                                    " (取得は続行します)"
+                                )
+                            else:
+                                ds = result.get("datasource") or {}
+                                st.success(
+                                    f"✅ CRM 同期完了 ({result['elapsed_sec']:.0f}秒) / "
+                                    f"最終同期: {ds.get('lastDataSyncTime', '?')} / "
+                                    f"使用 {ds.get('syncUsed', '?')}/{ds.get('totalSyncAllowed', '?')} 回"
+                                )
+                            status_box.empty()
                         with st.spinner("確定 transactions を取得中..."):
                             ff_c = fetch_transaction_xlsx(fetcher, view_conf)
                         with st.spinner("予測 transactions を取得中..."):

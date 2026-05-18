@@ -110,6 +110,26 @@ class ZohoAnalyticsClient:
         data = self.request("GET", path)
         return data.get("data", {}).get("views", [])
 
+    def list_data_sources(self) -> list[dict[str, Any]]:
+        """ワークスペースに紐づくデータソース (Zoho CRM connector 等) を返す。
+
+        各要素: {datasourceName, datasourceId, lastDataSyncStatus,
+                 lastDataSyncTime, schedule, nextScheduleTime,
+                 syncUsed, totalSyncAllowed}
+        """
+        path = f"/workspaces/{self.config.workspace_id}/datasources"
+        data = self.request("GET", path)
+        return data.get("data", {}).get("dataSources", [])
+
+    def trigger_datasource_sync(self, datasource_id: str) -> dict[str, Any]:
+        """指定データソースの同期を発火する。
+
+        必要 OAuth スコープ: ZohoAnalytics.data.update (もしくは datasync 系)
+        手動同期は 1 日あたり totalSyncAllowed 回まで（既定 5 回）。
+        """
+        path = f"/workspaces/{self.config.workspace_id}/datasources/{datasource_id}/sync"
+        return self.request("POST", path)
+
     def get_view_details(self, view_id: str) -> dict[str, Any]:
         """view の詳細（型・所属など）を返す。"""
         path = f"/views/{view_id}"

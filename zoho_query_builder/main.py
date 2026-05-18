@@ -283,8 +283,10 @@ def main() -> None:
                         help="同名 Query Table が既存ならば削除して作り直す")
     p_build.add_argument("--include-deal-id", action="store_true",
                         help="商談.Id を 案件番号 列として追加")
-    p_build.add_argument("--resolve-client-name", action="store_true",
-                        help="取引先テーブルと JOIN してクライアント名を実名で取得")
+    p_build.add_argument("--resolve-client-name", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="取引先テーブルと JOIN してクライアント名を実名で取得（既定: 有効。"
+                             "--no-resolve-client-name で無効化）")
     p_build.add_argument("--client-lookup-table", default="取引先",
                         help="クライアント名解決用のテーブル名（既定: 取引先）")
     p_build.add_argument("--client-lookup-id-col", default="Id",
