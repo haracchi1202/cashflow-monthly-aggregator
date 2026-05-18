@@ -153,6 +153,7 @@ def cmd_build(args: argparse.Namespace) -> None:
         include_case_number=args.include_case_number,
         resolve_payee=args.resolve_payee,
         payee_lookup_table=args.payee_lookup_table,
+        min_tx_date=args.min_tx_date,
     )
     print("=== 生成 SQL ===")
     print(sql)
@@ -299,6 +300,9 @@ def main() -> None:
                         help="商談 raw テーブルと JOIN して 支払先 を取得（確定/予測 の sync 列が無い場合）")
     p_build.add_argument("--payee-lookup-table", default="商談",
                         help="支払先解決用のテーブル名（既定: 商談）")
+    p_build.add_argument("--min-tx-date", default=None,
+                        help="取引日 (pair.date_column) の下限。YYYY-MM-DD 形式。"
+                             "指定すると AND date_column >= DATE 'YYYY-MM-DD' が各 SELECT に付く")
     p_build.add_argument("--dry-run", action="store_true", help="SQL の表示のみ。Query Table は作成しない")
     p_build.set_defaults(func=cmd_build)
 

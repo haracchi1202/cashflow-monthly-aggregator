@@ -39,6 +39,7 @@ def build_transaction_sql(
     payee_lookup_table: str = "商談",
     payee_lookup_id_col: str = "Id",
     deal_join_id_col: str = "Id",
+    min_tx_date: str | None = None,
 ) -> str:
     """確定/予測 共通の UNION ALL SQL を生成。
 
@@ -134,10 +135,21 @@ def build_transaction_sql(
 
     extra = f"\n  AND {extra_where}" if extra_where else ""
 
+    # 取引日（pair.date_column）の下限フィルタ。Streamlit/machi/daily の集計対象を
+    # 直近の期間に絞るためのもの。pair 毎に異なる日付列なので、ブロック内で組む。
+    min_tx_filter_template: str | None = None
+    if min_tx_date:
+        # SQL 文字列リテラル安全化（基本は YYYY-MM-DD 想定）
+        safe = min_tx_date.replace("'", "''")
+        min_tx_filter_template = f"\n  AND {{date_q}} >= DATE '{safe}'"
+
     blocks: list[str] = []
     for pair in detection.pairs:
         date_q = _src_col(pair.date_column)
         amount_q = _src_col(pair.amount_column)
+        min_tx_filter = (
+            min_tx_filter_template.format(date_q=date_q) if min_tx_filter_template else ""
+        )
         # 支払先名: payment 行のみ採用
         # 優先順位: (1) resolve_payee=True なら 商談 raw を JOIN し、
         #             date_column の "支払日" を "支払先" に差し替えた列を引く
@@ -169,7 +181,7 @@ FROM {src}{join_clause}{case_join}{payee_join}
 WHERE {deal}     IS NOT NULL
   AND {date_q}   IS NOT NULL
   AND {amount_q} IS NOT NULL
-  AND {amount_q} <> 0{stage_filter}{qualify_filter}{extra}"""
+  AND {amount_q} <> 0{stage_filter}{qualify_filter}{min_tx_filter}{extra}"""
         blocks.append(block)
 
     return "\n\nUNION ALL\n\n".join(blocks)
